@@ -136,7 +136,9 @@ async def webhook(payload: WebhookPayload):
             "id": doc_id,
             "category": payload.category,
             "subcategory": payload.subcategory,
-            "text": text
+            "question": payload.question,
+            "answer": payload.answer,
+            "translation": payload.translation
         })
 
         # 변경 사항을 파일에 즉시 저장
