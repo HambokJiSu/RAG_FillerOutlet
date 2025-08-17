@@ -1,0 +1,6 @@
+--- Query Debug Info ---
+Faiss search returned IDs: [42 26 32]
+Total items in metadata map: 46
+Sample metadata map keys: [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0]
+Found 0 matching IDs in metadata map: []
+--- End Debug Info ---

@@ -24,6 +24,11 @@ DIMENSION = 1536
 FAISS_INDEX_PATH = "faq_index.faiss"
 METADATA_PATH = "faq_metadata.json"
 
+# 유사도 임계값 (Squared L2 distance). 값이 작을수록 유사도가 높음.
+# OpenAI 임베딩(normalized)의 경우, (dist^2 = 2 - 2 * cos_sim)
+# e.g., cos_sim 0.8 -> dist 0.4, cos_sim 0.7 -> dist 0.6
+SIMILARITY_THRESHOLD = 1.4  # 현재 1.4가 가장 유효한 유사도 값을로 판단됨
+
 # --- Data Models ---
 class WebhookPayload(BaseModel):
     id: int
@@ -35,33 +40,45 @@ class WebhookPayload(BaseModel):
 
 class QueryPayload(BaseModel):
     question: str
-    top_k: int = Field(default=3, gt=0, le=10)
+    top_k: int = Field(default=1, gt=0, le=10)
 
 # --- Global Variables ---
 # Faiss 인덱스와 메타데이터는 앱 생명주기 동안 관리
 index = None
 metadata_list = []
+id_to_metadata = {} # ID를 메타데이터로 빠르게 조회하기 위한 맵
 
 # --- Helper Functions ---
 def load_data():
     """서버 시작 시 Faiss 인덱스와 메타데이터를 파일에서 로드합니다."""
-    global index, metadata_list
+    global index, metadata_list, id_to_metadata
     try:
         print(f"Loading Faiss index from {FAISS_INDEX_PATH}...")
         index = faiss.read_index(FAISS_INDEX_PATH)
+        if not hasattr(index, 'add_with_ids'):
+            print("[ERROR] Loaded Faiss index does not support updates (not an IndexIDMap).")
+            print("[ERROR] Please delete the old index file and restart the server to create a compatible one.")
+            # 호환되지 않는 인덱스로는 실행을 중단하거나, 마이그레이션 로직을 추가해야 합니다.
+            # 여기서는 에러를 출력하고 비정상 상태로 둘 수 있으므로, 실제 운영에서는 처리가 필요합니다.
+            raise RuntimeError("Incompatible Faiss index type.")
         print("Faiss index loaded successfully.")
-    except RuntimeError:
-        print(f"Faiss index file not found. Initializing a new index with dimension {DIMENSION}.")
-        index = faiss.IndexFlatL2(DIMENSION)
+    except (RuntimeError, FileNotFoundError):
+        print(f"Faiss index file not found or incompatible. Initializing a new index with dimension {DIMENSION}.")
+        # 업데이트를 지원하려면 ID를 매핑할 수 있는 IndexIDMap을 사용해야 합니다.
+        base_index = faiss.IndexFlatL2(DIMENSION)
+        index = faiss.IndexIDMap(base_index)
 
     try:
         print(f"Loading metadata from {METADATA_PATH}...")
         with open(METADATA_PATH, "r", encoding="utf-8") as f:
             metadata_list = json.load(f)
+        # 메타데이터 로드 후, 빠른 조회를 위한 맵 생성
+        id_to_metadata = {str(item['id']): item for item in metadata_list}
         print(f"Metadata loaded successfully. {len(metadata_list)} items.")
     except FileNotFoundError:
         print("Metadata file not found. Initializing an empty metadata list.")
         metadata_list = []
+        id_to_metadata = {}
 
 def save_data():
     """Faiss 인덱스와 메타데이터를 파일에 저장합니다."""
@@ -129,17 +146,37 @@ async def webhook(payload: WebhookPayload):
     try:
         embedding = await get_safe_embedding(text)
         vec = np.array(embedding, dtype='float32').reshape(1, -1)
+        vector_id = np.array([payload.id], dtype='int64')
 
-        # 기존에 동일한 ID가 있는지 확인하고, 있다면 업데이트 (여기서는 간단히 추가)
-        index.add(vec)
-        metadata_list.append({
+        new_metadata = {
             "id": doc_id,
             "category": payload.category,
             "subcategory": payload.subcategory,
             "question": payload.question,
             "answer": payload.answer,
             "translation": payload.translation
-        })
+        }
+
+        # ID 존재 여부를 확인하여 갱신 또는 추가
+        if doc_id in id_to_metadata:
+            print(f"Updating item with ID {doc_id}...")
+            # 기존 벡터 제거 후 새 벡터 추가 (갱신)
+            index.remove_ids(vector_id)
+            index.add_with_ids(vec, vector_id)
+            
+            # 메타데이터 리스트에서 해당 아이템 찾아 갱신
+            for i, item in enumerate(metadata_list):
+                if item['id'] == doc_id:
+                    metadata_list[i] = new_metadata
+                    break
+        else:
+            print(f"Adding new item with ID {doc_id}...")
+            # 새 벡터와 메타데이터 추가
+            index.add_with_ids(vec, vector_id)
+            metadata_list.append(new_metadata)
+
+        # 조회용 맵 갱신
+        id_to_metadata[doc_id] = new_metadata
 
         # 변경 사항을 파일에 즉시 저장
         save_data()
@@ -163,7 +200,33 @@ async def query_rag(payload: QueryPayload):
 
         D, I = index.search(query_vec, payload.top_k)
 
-        results = [metadata_list[i] for i in I[0]]
+        # --- Debugging Output ---
+        print("\n--- Query Debug Info ---")
+        print(f"Faiss search returned IDs: {I[0]}")
+        print(f"Faiss search returned distances: {D[0]}")
+        
+        id_keys = list(id_to_metadata.keys())
+        print(f"Total items in metadata map: {len(id_keys)}")
+        print(f"Sample metadata map keys: {id_keys[:10]}") # Print first 10 keys for preview
+        
+        # 유사도 임계값을 기준으로 결과 필터링
+        results = []
+        for doc_id, dist in zip(I[0], D[0]):
+            if dist < SIMILARITY_THRESHOLD:
+                # Faiss에서 반환된 ID를 사용해 메타데이터 조회
+                if str(doc_id) in id_to_metadata:
+                    results.append(id_to_metadata[str(doc_id)])
+
+        print(f"Found {len(results)} items meeting similarity threshold.")
+        print("--- End Debug Info ---")
+        # --- End Debugging ---
+
+        if not results:
+            print("No matching items found in metadata for the given query.")
+            results = [
+                {"id": None, "question": "No matching items found.", "answer": "문의 내용을 담당자가 검토중입니다. 검토가 완료되는대로 회신 드리겠습니다.", "translation": ""}
+            ]
+
         return {"results": results}
     except HTTPException as e:
         raise e

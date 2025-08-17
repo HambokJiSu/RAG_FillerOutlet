@@ -40,7 +40,7 @@ async def get_safe_embedding(text: str):
 # --- Main Rebuild Logic ---
 async def main():
     """
-    faq_metadata.json 파일을 읽어 faq_index.faiss 파일을 새로 생성하거나 덮어씁니다.
+    faq_metadata.json 파일을 읽어 ID 기반의 faq_index.faiss 파일을 새로 생성하거나 덮어씁니다.
     """
     print(f"Loading metadata from {METADATA_PATH}...")
     try:
@@ -55,34 +55,62 @@ async def main():
         return
 
     if not metadata_list:
-        print("Metadata is empty. No index will be created.")
+        print("Metadata is empty. Creating an empty index.")
         if os.path.exists(FAISS_INDEX_PATH):
             os.remove(FAISS_INDEX_PATH)
-            print(f"Removed existing empty index file: {FAISS_INDEX_PATH}")
+            print(f"Removed existing index file: {FAISS_INDEX_PATH}")
+        # 빈 인덱스라도 생성하여 일관성 유지
+        base_index = faiss.IndexFlatL2(DIMENSION)
+        index = faiss.IndexIDMap(base_index)
+        faiss.write_index(index, FAISS_INDEX_PATH)
+        print(f"Created an empty index file: {FAISS_INDEX_PATH}")
         return
 
-    print(f"Initializing a new Faiss index with dimension {DIMENSION}.")
-    index = faiss.IndexFlatL2(DIMENSION)
+    print(f"Initializing a new Faiss index (IndexIDMap) with dimension {DIMENSION}.")
+    base_index = faiss.IndexFlatL2(DIMENSION)
+    index = faiss.IndexIDMap(base_index)
 
-    print("Starting to generate embeddings and build the Faiss index...")
-    for i, item in enumerate(metadata_list):
+    print("Preparing data for embedding")
+    texts_to_embed = []
+    vector_ids = []
+    
+    for item in metadata_list:
+        doc_id_str = item.get('id')
+        question = item.get("question", "")
+        answer = item.get("answer", "")
+        translation = item.get("translation", "")
+
+        if not doc_id_str:
+            print(f"\n[WARN] Item with missing 'id' found. Skipping. Content: Q: {question[:20]}...")
+            continue
         try:
-            question = item.get("question", "")
-            answer = item.get("answer", "")
-            translation = item.get("translation", "")
+            vector_ids.append(int(doc_id_str))
+            texts_to_embed.append(f"Q: {question}\nA: {answer}\n(ENG: {translation or ''})")
+        except (ValueError, TypeError):
+            print(f"\n[WARN] Item with invalid 'id': {doc_id_str}. Skipping.")
+            continue
 
-            # main.py의 웹훅 로직과 동일하게 임베딩할 텍스트를 구성합니다.
-            text_to_embed = f"Q: {question}\nA: {answer}\n(ENG: {translation or ''})"
+    if not texts_to_embed:
+        print("No valid items to process after filtering. An empty index will be created.")
+        faiss.write_index(index, FAISS_INDEX_PATH)
+        print(f"Created an empty index file: {FAISS_INDEX_PATH}")
+        return
 
-            print(f"Processing item {i+1}/{len(metadata_list)} (ID: {item.get('id', 'N/A')})...", end="\r")
-            embedding = await get_safe_embedding(text_to_embed)
-            vec = np.array(embedding, dtype='float32').reshape(1, -1)
-            index.add(vec)
+    print(f"Generating embeddings for {len(texts_to_embed)} items in batch...")
+    try:
+        tasks = [get_safe_embedding(text) for text in texts_to_embed]
+        embeddings = await asyncio.gather(*tasks)
+        
+        vectors = np.array(embeddings, dtype='float32')
+        ids_array = np.array(vector_ids, dtype='int64')
 
-        except Exception as e:
-            print(f"\n[ERROR] Failed to process item {i+1} (ID: {item.get('id', 'N/A')}).")
-            print("Stopping the rebuild process. The index file will not be saved.")
-            return
+        print("Adding vectors to the Faiss index...")
+        index.add_with_ids(vectors, ids_array)
+
+    except Exception as e:
+        print(f"\n[ERROR] An error occurred during embedding or index building: {e}")
+        print("Stopping the rebuild process. The index file will not be saved.")
+        return
 
     print(f"\nIndex build complete. Total vectors: {index.ntotal}")
     print(f"Saving new Faiss index to {FAISS_INDEX_PATH}...")
