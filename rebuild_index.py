@@ -84,10 +84,12 @@ async def main():
             print(f"\n[WARN] Item with missing 'id' found. Skipping. Content: Q: {question[:20]}...")
             continue
         try:
-            vector_ids.append(int(doc_id_str))
+            # float 형태의 ID (e.g., 1.0)도 처리하기 위해 float으로 먼저 변환 후 int로 캐스팅
+            vector_id = int(float(doc_id_str))
+            vector_ids.append(vector_id)
             texts_to_embed.append(f"Q: {question}\nA: {answer}\n(ENG: {translation or ''})")
-        except (ValueError, TypeError):
-            print(f"\n[WARN] Item with invalid 'id': {doc_id_str}. Skipping.")
+        except (ValueError, TypeError, AttributeError):
+            print(f"\n[WARN] Item with invalid or non-numeric 'id': {doc_id_str}. Skipping.")
             continue
 
     if not texts_to_embed:

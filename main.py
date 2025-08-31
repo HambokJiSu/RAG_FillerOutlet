@@ -73,7 +73,7 @@ def load_data():
         with open(METADATA_PATH, "r", encoding="utf-8") as f:
             metadata_list = json.load(f)
         # 메타데이터 로드 후, 빠른 조회를 위한 맵 생성
-        id_to_metadata = {str(item['id']): item for item in metadata_list}
+        id_to_metadata = {int(item['id']): item for item in metadata_list}
         print(f"Metadata loaded successfully. {len(metadata_list)} items.")
     except FileNotFoundError:
         print("Metadata file not found. Initializing an empty metadata list.")
@@ -140,13 +140,13 @@ app = FastAPI(lifespan=lifespan)
 @app.post("/webhook")
 async def webhook(payload: WebhookPayload):
     """Google Spreadsheet에서 받은 데이터로 Faiss 인덱스와 메타데이터를 업데이트합니다."""
-    doc_id = str(payload.id)
+    doc_id = payload.id # Pydantic 모델에 의해 이미 int
     text = f"Q: {payload.question}\nA: {payload.answer}\n(ENG: {payload.translation or ''})"
 
     try:
         embedding = await get_safe_embedding(text)
         vec = np.array(embedding, dtype='float32').reshape(1, -1)
-        vector_id = np.array([payload.id], dtype='int64')
+        vector_id_arr = np.array([doc_id], dtype='int64')
 
         new_metadata = {
             "id": doc_id,
@@ -161,18 +161,18 @@ async def webhook(payload: WebhookPayload):
         if doc_id in id_to_metadata:
             print(f"Updating item with ID {doc_id}...")
             # 기존 벡터 제거 후 새 벡터 추가 (갱신)
-            index.remove_ids(vector_id)
-            index.add_with_ids(vec, vector_id)
+            index.remove_ids(vector_id_arr)
+            index.add_with_ids(vec, vector_id_arr)
             
             # 메타데이터 리스트에서 해당 아이템 찾아 갱신
             for i, item in enumerate(metadata_list):
-                if item['id'] == doc_id:
+                if int(item['id']) == doc_id:
                     metadata_list[i] = new_metadata
                     break
         else:
             print(f"Adding new item with ID {doc_id}...")
             # 새 벡터와 메타데이터 추가
-            index.add_with_ids(vec, vector_id)
+            index.add_with_ids(vec, vector_id_arr)
             metadata_list.append(new_metadata)
 
         # 조회용 맵 갱신
@@ -214,8 +214,8 @@ async def query_rag(payload: QueryPayload):
         for doc_id, dist in zip(I[0], D[0]):
             if dist < SIMILARITY_THRESHOLD:
                 # Faiss에서 반환된 ID를 사용해 메타데이터 조회
-                if str(doc_id) in id_to_metadata:
-                    results.append(id_to_metadata[str(doc_id)])
+                if doc_id in id_to_metadata:
+                    results.append(id_to_metadata[doc_id])
 
         print(f"Found {len(results)} items meeting similarity threshold.")
         print("--- End Debug Info ---")
