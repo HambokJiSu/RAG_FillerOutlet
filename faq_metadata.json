@@ -333,7 +333,7 @@
         "subcategory": "제품 (배송후)",
         "question": "배송지 오기입으로 인한 오배달",
         "answer": "안녕하세요, 필러아울렛 입니다.\n\n\"고객님, 입력하신 배송지가 잘못되었다면 신속하게 확인이 필요합니다.\n현재 주문 상태를 확인한 후 수정 가능 여부를 안내해 드리겠습니다.\n\n✅ 출고 전: 주소 변경이 가능하므로, 올바른 배송지를 알려주시면 즉시 수정해 드리겠습니다.\n✅ 출고 후: 이미 배송이 시작된 경우, 배송사에 직접 요청하여 주소 변경이 가능한지 확인해야 합니다.\n\n추가로 도와드릴 사항이 있다면 편하게 말씀해 주세요!\"\n\n감사합니다.",
-        "translation": "Hello, This is Filler Outlet.\n\nUnfortunately, the expiration date shown in the product photos on the website reflects the longest available shelf life at the time of posting.\n\nAs per our site policy, we always ship products with at least 6 months of shelf life remaining.\n(However, as you’ve seen with your order, we typically ship items with around one year of shelf life remaining.)\n\nWe truly appreciate your feedback, and we will take it into consideration to improve our website.\n\nThank you.\n"
+        "translation": "Hello, this is Filler Outlet.\n\nIf you've entered the wrong shipping address, we need to check it quickly. We will guide you on whether it can be modified after checking the current order status.\n\n✅ Before shipment: The address can be changed. Please provide the correct address, and we will update it immediately.\n✅ After shipment: If the delivery has already started, you must contact the shipping company directly to see if the address can be changed.\n\nPlease let us know if there is anything else we can help you with!\"\n\nThank you."
     },
     {
         "id": 43,
@@ -366,21 +366,5 @@
         "question": "빠른 배송과 응대에 감사 메세지",
         "answer": "안녕하세요, 필러아울렛 입니다.\n\n고객님, 주문하신 제품이 품절되어 부득이하게 주문을 취소해야 합니다. 😢\n\n✅ 환불 또는 대체 제품 변경 가능\n✅ 다른 제품을 추가하여 차액 조정 가능\n\n어떤 방법이 더 나은지 알려주시면 빠르게 도와드리겠습니다!\"\n\n감사합니다.",
         "translation": "Hello, this is Filler Outlet.\n\nIf you’re satisfied with our service, we’d love it if you could leave a review on either our website(with photo) or Reddit.\n\nAs a thank-you, we’ll send you a separate 5% discount coupon \n\nThank you"
-    },
-    {
-        "id": 46,
-        "category": "고객만족",
-        "subcategory": "배송 및 응대",
-        "question": "빠른 배송과 응대에 감사 메세지",
-        "answer": "안녕하세요, 필러아울렛 입니다.\n\n고객님, 주문하신 제품이 품절되어 부득이하게 주문을 취소해야 합니다. 😢\n\n✅ 환불 또는 대체 제품 변경 가능\n✅ 다른 제품을 추가하여 차액 조정 가능\n\n어떤 방법이 더 나은지 알려주시면 빠르게 도와드리겠습니다!\"\n\n감사합니다.",
-        "translation": "Hello, this is Filler Outlet.\n\nHere is a brief overview of our standard shipping process:\nOnce an order is received, we check the inventory. If the item is in stock, it is shipped the same day. If not, we place an order with our supplier, which usually takes about 2 days to restock.\n\nOrders under $1000 are shipped via *FedEx*.\nOrders over $1000 are shipped using \n*Filler Outlet’s dedicated air cargo + UPS* \nservice to reduce customs clearance risks.\n\nEstimated delivery times to the U.S. are as follows:\n• *FedEx* : 3–7 business days (if there are no customs delays)\n\n• *Filler Outlet Air + UPS*: 4–8 business days\n\nPlease note that we do not offer guaranteed delivery dates.\n\nFor orders over $1000, there is a significant risk for both the buyer and seller, which is why we use our dedicated logistics service to ensure a safer delivery. \n\nThank you for your understanding."
-    },
-    {
-        "id": 46,
-        "category": "고객만족",
-        "subcategory": "배송 및 응대",
-        "question": "빠른 배송과 응대에 감사 메세지",
-        "answer": "안녕하세요, 필러아울렛 입니다.\n\n고객님, 주문하신 제품이 품절되어 부득이하게 주문을 취소해야 합니다. 😢\n\n✅ 환불 또는 대체 제품 변경 가능\n✅ 다른 제품을 추가하여 차액 조정 가능\n\n어떤 방법이 더 나은지 알려주시면 빠르게 도와드리겠습니다!\"\n\n감사합니다.",
-        "translation": "First of all, let me share our current policy:\n\nIf a product is seized or encounters customs issues in the U.S., we will either reship the product or issue a refund.\n(All costs will be fully covered by Filler Outlet.)\n\nFor orders under $1000, we ship via FedEx. For orders over $1000, we use Filler Outlet’s dedicated cargo flight combined with UPS ground delivery.\n(This service significantly reduces the likelihood of customs issues.)\n\nPlease note that our shipping policy is expected to be updated within the next two weeks in accordance with new U.S. customs regulations."
     }
 ]

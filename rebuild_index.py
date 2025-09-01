@@ -9,31 +9,33 @@ import asyncio
 # --- Configuration ---
 # .env 파일에서 환경 변수 로드
 load_dotenv()
-
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-# OpenAI의 text-embedding-3-small 모델 차원
-DIMENSION = 1536
+ 
+# 로컬 임베딩 모델 설정
+OLLAMA_API_BASE_URL = os.getenv("OLLAMA_API_BASE_URL", "http://192.168.0.48:11434/api")
+LOCAL_EMBEDDING_MODEL_NAME = "dengcao/Qwen3-Embedding-0.6B:F16" # 임베딩 전용 모델
+ 
+# Qwen3-Embedding-0.6B 모델의 차원은 1024입니다.
+DIMENSION = 1024
 FAISS_INDEX_PATH = "faq_index.faiss"
 METADATA_PATH = "faq_metadata.json"
 
 # --- Embedding Function (from main.py) ---
-async def get_openai_embedding(text: str):
-    """OpenAI 임베딩을 가져옵니다."""
+async def get_local_embedding(text: str):
+    """자체 서버의 임베딩 모델을 호출합니다. (Ollama 기준)"""
     async with httpx.AsyncClient(timeout=30.0) as client:
-        url = "https://api.openai.com/v1/embeddings"
-        headers = {"Authorization": f"Bearer {OPENAI_API_KEY}"}
-        payload = {"model": "text-embedding-3-small", "input": text}
-        r = await client.post(url, headers=headers, json=payload)
+        payload = {"model": LOCAL_EMBEDDING_MODEL_NAME, "prompt": text}
+        r = await client.post(f"{OLLAMA_API_BASE_URL}/embeddings", json=payload)
         r.raise_for_status()
-        return r.json()["data"][0]["embedding"]
+        return r.json()["embedding"]
 
 async def get_safe_embedding(text: str):
-    """OpenAI를 우선 시도하고, 실패 시 예외를 발생시키는 안전한 임베딩 함수입니다."""
+    """로컬 임베딩을 시도하고, 실패 시 예외를 발생시키는 안전한 임베딩 함수입니다."""
     try:
-        return await get_openai_embedding(text)
+        return await get_local_embedding(text)
     except Exception as e:
-        print(f"\n[ERROR] OpenAI embedding failed: {e}")
+        # 오류 발생 시 더 상세한 정보를 출력합니다.
+        print(f"\n[ERROR] Local embedding failed for text: '{text[:100]}...'")
+        print(f"[ERROR] Exception details: {repr(e)}")
         # 임베딩 실패 시 스크립트를 중지시키기 위해 예외를 다시 발생시킵니다.
         raise
 
@@ -73,44 +75,67 @@ async def main():
     print("Preparing data for embedding")
     texts_to_embed = []
     vector_ids = []
+    processed_ids = set()
     
     for item in metadata_list:
         doc_id_str = item.get('id')
         question = item.get("question", "")
         answer = item.get("answer", "")
         translation = item.get("translation", "")
-
+        
         if not doc_id_str:
             print(f"\n[WARN] Item with missing 'id' found. Skipping. Content: Q: {question[:20]}...")
             continue
+            
+        text_to_embed = f"Q: {question}\nA: {answer}\n(ENG: {translation or ''})"
+        # 임베딩할 텍스트가 비어있는지 확인합니다.
+        if not text_to_embed.strip():
+            print(f"\n[WARN] Item with empty content found for ID {doc_id_str}. Skipping.")
+            continue
+
         try:
             # float 형태의 ID (e.g., 1.0)도 처리하기 위해 float으로 먼저 변환 후 int로 캐스팅
             vector_id = int(float(doc_id_str))
+            
+            # 중복된 ID가 있는지 확인하고 경고를 출력합니다.
+            if vector_id in processed_ids:
+                print(f"\n[WARN] Duplicate ID '{vector_id}' found. This can lead to inconsistent data.")
+            processed_ids.add(vector_id)
+
             vector_ids.append(vector_id)
-            texts_to_embed.append(f"Q: {question}\nA: {answer}\n(ENG: {translation or ''})")
+            texts_to_embed.append(text_to_embed)
         except (ValueError, TypeError, AttributeError):
             print(f"\n[WARN] Item with invalid or non-numeric 'id': {doc_id_str}. Skipping.")
             continue
 
     if not texts_to_embed:
-        print("No valid items to process after filtering. An empty index will be created.")
+        print("No valid items to process after filtering. The index file will not be created.")
         faiss.write_index(index, FAISS_INDEX_PATH)
         print(f"Created an empty index file: {FAISS_INDEX_PATH}")
         return
 
-    print(f"Generating embeddings for {len(texts_to_embed)} items in batch...")
+    print(f"Generating embeddings for {len(texts_to_embed)} items sequentially...")
+    embeddings = []
     try:
-        tasks = [get_safe_embedding(text) for text in texts_to_embed]
-        embeddings = await asyncio.gather(*tasks)
+        for i, text in enumerate(texts_to_embed):
+            # 로컬 서버 과부하를 막기 위해 하나씩 순차적으로 처리합니다.
+            embedding = await get_safe_embedding(text)
+            embeddings.append(embedding)
+            # 진행 상황을 10개 단위로 출력하여 사용자가 인지할 수 있도록 합니다.
+            if (i + 1) % 10 == 0 or (i + 1) == len(texts_to_embed):
+                print(f"  ... processed {i + 1}/{len(texts_to_embed)} items")
         
         vectors = np.array(embeddings, dtype='float32')
+        # 임베딩된 벡터들을 L2 정규화하여 일관된 거리 계산을 보장합니다.
+        faiss.normalize_L2(vectors)
+
         ids_array = np.array(vector_ids, dtype='int64')
 
-        print("Adding vectors to the Faiss index...")
+        print("Adding normalized vectors to the Faiss index...")
         index.add_with_ids(vectors, ids_array)
-
     except Exception as e:
-        print(f"\n[ERROR] An error occurred during embedding or index building: {e}")
+        # 오류 발생 시 더 상세한 정보를 출력합니다.
+        print(f"\n[ERROR] An error occurred during embedding or index building: {repr(e)}")
         print("Stopping the rebuild process. The index file will not be saved.")
         return
 
@@ -121,7 +146,5 @@ async def main():
     print("Rebuild process finished.")
 
 if __name__ == "__main__":
-    if not OPENAI_API_KEY:
-        print("[ERROR] OPENAI_API_KEY environment variable not set. Please create a .env file or set it.")
-    else:
-        asyncio.run(main())
+    print("Starting index rebuild process using local embedding model...")
+    asyncio.run(main())

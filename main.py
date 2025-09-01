@@ -14,20 +14,30 @@ load_dotenv()
 # --- Configuration ---
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# 로컬 임베딩 모델 서버 주소 (예: Ollama)
+OLLAMA_API_BASE_URL = os.getenv("OLLAMA_API_BASE_URL", "http://192.168.0.48:11434/api")
 
-# OpenAI의 text-embedding-3-small 모델 차원
-# 중요: PRD에 명시된 Gemini `embedding-001` 모델은 768 차원을 반환합니다.
-# OpenAI 모델(1536 차원)과 차원이 달라 Faiss 인덱스에 함께 사용할 수 없습니다.
-# 이 문제를 해결하려면 동일한 차원의 모델을 사용하거나, 별도의 인덱스를 관리해야 합니다.
-# 여기서는 PRD의 요구사항을 따르되, OpenAI가 기본이라는 전제 하에 1536으로 설정합니다.
-DIMENSION = 1536
+# 임베딩 모델과 생성 모델을 분리하여 정의
+# LOCAL_EMBEDDING_MODEL_NAME = "nomic-embed-text" # 임베딩 전용 모델
+LOCAL_EMBEDDING_MODEL_NAME = "dengcao/Qwen3-Embedding-0.6B:F16" # 임베딩 전용 모델
+LOCAL_GENERATION_MODEL_NAME = "gpt-oss:20b"      # 답변 생성용 모델
+
+# 중요: 사용하는 모델에 따라 차원(dimension)을 맞춰야 합니다.
+# - OpenAI text-embedding-3-small: 1536
+# - nomic-embed-text (Ollama): 768
+# - dengcao/Qwen3-Embedding-8B (Ollama): 1024
+# - dengcao/Qwen3-Embedding-0.6B (Ollama): 1024
+# 여기서는 임베딩 모델인 dengcao/Qwen3-Embedding-0.6B를 기준으로 1024로 설정합니다.
+DIMENSION = 1024
 FAISS_INDEX_PATH = "faq_index.faiss"
 METADATA_PATH = "faq_metadata.json"
 
 # 유사도 임계값 (Squared L2 distance). 값이 작을수록 유사도가 높음.
-# OpenAI 임베딩(normalized)의 경우, (dist^2 = 2 - 2 * cos_sim)
-# e.g., cos_sim 0.8 -> dist 0.4, cos_sim 0.7 -> dist 0.6
-SIMILARITY_THRESHOLD = 1.4  # 현재 1.4가 가장 유효한 유사도 값을로 판단됨
+# nomic-embed-text (normalized) 임베딩의 경우, (dist^2 = 2 - 2 * cos_sim) 입니다.
+# 예: cos_sim 0.7 -> dist^2 0.6, cos_sim 0.8 -> dist^2 0.4
+# 1.0은 cos_sim 0.5에 해당하며, 이보다 낮은 유사도는 관련성이 거의 없다고 판단합니다.
+# 모델이 변경되었으므로 이 값은 테스트를 통해 조정이 필요할 수 있습니다.
+SIMILARITY_THRESHOLD = 1.0
 
 # --- Data Models ---
 class WebhookPayload(BaseModel):
@@ -40,7 +50,7 @@ class WebhookPayload(BaseModel):
 
 class QueryPayload(BaseModel):
     question: str
-    top_k: int = Field(default=1, gt=0, le=10)
+    top_k: int = Field(default=3, gt=0, le=10) # LLM에게 더 많은 컨텍스트를 주기 위해 기본값을 3으로 변경
 
 # --- Global Variables ---
 # Faiss 인덱스와 메타데이터는 앱 생명주기 동안 관리
@@ -91,6 +101,35 @@ def save_data():
         json.dump(metadata_list, f, ensure_ascii=False, indent=4)
     print("Metadata saved.")
 
+async def get_local_embedding(text: str):
+    """자체 서버의 임베딩 모델을 호출합니다. (Ollama 기준)"""
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        payload = {"model": LOCAL_EMBEDDING_MODEL_NAME, "prompt": text}
+        r = await client.post(f"{OLLAMA_API_BASE_URL}/embeddings", json=payload)
+        r.raise_for_status()
+        return r.json()["embedding"]
+
+async def generate_answer_with_local_llm(question: str, context: str):
+    """
+    Ollama의 생성 모델(gpt-oss:20b)을 사용하여 질문과 컨텍스트 기반의 답변을 생성합니다.
+    """
+    prompt = f"""You are a helpful AI assistant for a company named 'Filler Outlet'. Your task is to answer user questions based ONLY on the provided 'Context' from the FAQ. Answer in Korean. If the context doesn't contain the answer, say that you cannot find the information.
+
+Context:
+---
+{context}
+---
+
+Question: {question}
+
+Answer:"""
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        payload = {"model": LOCAL_GENERATION_MODEL_NAME, "prompt": prompt, "stream": False}
+        r = await client.post(f"{OLLAMA_API_BASE_URL}/generate", json=payload)
+        r.raise_for_status()
+        return r.json()["response"]
+
 async def get_openai_embedding(text: str):
     """OpenAI 임베딩을 가져옵니다."""
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -113,18 +152,16 @@ async def get_gemini_embedding(text: str):
         return r.json()["embedding"]["value"]
 
 async def get_safe_embedding(text: str):
-    """OpenAI를 우선 시도하고, 실패 시 Gemini로 fallback하는 안전한 임베딩 함수입니다."""
+    """로컬 임베딩을 우선 사용하고, 실패 시 예외를 발생시키는 안전한 임베딩 함수입니다."""
     try:
-        return await get_openai_embedding(text)
+        return await get_local_embedding(text)
     except Exception as e:
-        print(f"[WARN] OpenAI embedding failed, falling back to Gemini: {e}")
-        # Gemini 임베딩은 차원이 다르므로 Faiss에 추가 시 오류가 발생할 수 있습니다.
-        # 이 예제에서는 PRD 요구사항을 보여주기 위해 호출하지만, 실제로는 차원 일치 작업이 필요합니다.
+        print(f"[ERROR] Local embedding failed: {e}")
+        # 로컬 임베딩 서버에 문제가 생겼을 때 API가 중단되도록 예외를 발생시킵니다.
         raise HTTPException(
             status_code=500,
-            detail=f"Primary embedding service failed, and fallback is not compatible due to dimension mismatch. OpenAI Error: {e}"
+            detail=f"Local embedding service failed. Please check the local model server. Error: {e}"
         )
-        # return await get_gemini_embedding(text) # 실제 사용 시 주석 해제 및 차원 문제 해결 필요
 
 # --- FastAPI App Lifecycle ---
 @asynccontextmanager
@@ -190,48 +227,81 @@ async def webhook(payload: WebhookPayload):
 
 @app.post("/query")
 async def query_rag(payload: QueryPayload):
-    """사용자 질문에 대해 Faiss에서 유사한 FAQ를 검색하여 반환합니다."""
+    """사용자 질문에 대해 Faiss에서 유사한 FAQ를 검색하고, 그 결과를 바탕으로 LLM이 최종 답변을 생성하여 반환합니다."""
+    print("\n--- New Query Received ---")
+    print(f"Question: {payload.question}")
+    print(f"Top K: {payload.top_k}")
+
     if index.ntotal == 0:
-        return {"results": []}
+        print("[WARN] Index is empty. Cannot perform search.")
+        return {
+            "generated_answer": "데이터베이스가 비어있어 답변을 생성할 수 없습니다.",
+            "source_documents": []
+        }
 
     try:
         query_embedding = await get_safe_embedding(payload.question)
         query_vec = np.array(query_embedding, dtype='float32').reshape(1, -1)
 
+        # 쿼리 벡터를 L2 정규화하여 검색 정확도를 보장합니다.
+        faiss.normalize_L2(query_vec)
+
+        # top_k만큼 유사한 문서를 검색
+        print(f"\n1. Performing Faiss search with normalized query vector...")
         D, I = index.search(query_vec, payload.top_k)
 
-        # --- Debugging Output ---
-        print("\n--- Query Debug Info ---")
-        print(f"Faiss search returned IDs: {I[0]}")
-        print(f"Faiss search returned distances: {D[0]}")
-        
-        id_keys = list(id_to_metadata.keys())
-        print(f"Total items in metadata map: {len(id_keys)}")
-        print(f"Sample metadata map keys: {id_keys[:10]}") # Print first 10 keys for preview
-        
+        print("\n2. Initial search results (before filtering):")
+        for i, (doc_id, dist) in enumerate(zip(I[0], D[0])):
+            if doc_id == -1:
+                print(f"  - Rank {i+1}: Invalid ID (-1).")
+                continue
+            question_preview = id_to_metadata.get(doc_id, {}).get('question', 'N/A')
+            print(f"  - Rank {i+1}: ID={doc_id}, Distance={dist:.4f}, Q: '{question_preview[:50]}...'")
+
         # 유사도 임계값을 기준으로 결과 필터링
-        results = []
+        source_documents = []
+        print(f"\n3. Filtering results with threshold (Distance < {SIMILARITY_THRESHOLD}):")
         for doc_id, dist in zip(I[0], D[0]):
             if dist < SIMILARITY_THRESHOLD:
-                # Faiss에서 반환된 ID를 사용해 메타데이터 조회
                 if doc_id in id_to_metadata:
-                    results.append(id_to_metadata[doc_id])
+                    source_documents.append(id_to_metadata[doc_id])
+                    print(f"  - [PASS] ID={doc_id}, Distance={dist:.4f}. Added to context.")
+                else:
+                    print(f"  - [WARN] ID={doc_id} passed threshold but not found in metadata.")
+            else:
+                print(f"  - [FAIL] ID={doc_id}, Distance={dist:.4f}. Discarded.")
 
-        print(f"Found {len(results)} items meeting similarity threshold.")
-        print("--- End Debug Info ---")
-        # --- End Debugging ---
+        if not source_documents:
+            # 일치하는 문서가 없을 때의 기본 답변
+            print("\n4. No documents passed the similarity threshold.")
+            generated_answer = "문의 내용과 관련된 정보를 찾지 못했습니다. 담당자가 직접 검토 후 회신 드릴 예정입니다."
+            context_str = "No relevant context found."
+        else:
+            # LLM에 전달할 컨텍스트 생성
+            context_str = "\n\n".join([
+                f"Q: {doc['question']}\nA: {doc['answer']}" for doc in source_documents
+            ])
+            print("\n4. Final context for LLM:")
+            print("--------------------")
+            print(context_str)
+            print("--------------------")
+            
+            # 로컬 LLM을 호출하여 답변 생성
+            print("\n5. Generating answer with local LLM...")
+            # generated_answer = await generate_answer_with_local_llm(payload.question, context_str)
+            # print(f"\n6. Generated Answer: {generated_answer.strip()}")
 
-        if not results:
-            print("No matching items found in metadata for the given query.")
-            results = [
-                {"id": None, "question": "No matching items found.", "answer": "문의 내용을 담당자가 검토중입니다. 검토가 완료되는대로 회신 드리겠습니다.", "translation": ""}
-            ]
+        print("--- Query Process Finished ---\n")
+        return {
+            # "generated_answer": generated_answer.strip(),
+            "generated_answer": "임시",
+            "source_documents": source_documents
+        }
 
-        return {"results": results}
     except HTTPException as e:
         raise e
     except Exception as e:
-        print(f"[ERROR] Query processing failed: {e}")
+        print(f"[ERROR] Query processing failed: {repr(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/")
