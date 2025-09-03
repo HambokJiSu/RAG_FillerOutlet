@@ -178,7 +178,9 @@ app = FastAPI(lifespan=lifespan)
 async def webhook(payload: WebhookPayload):
     """Google Spreadsheet에서 받은 데이터로 Faiss 인덱스와 메타데이터를 업데이트합니다."""
     doc_id = payload.id # Pydantic 모델에 의해 이미 int
-    text = f"Q: {payload.question}\nA: {payload.answer}\n(ENG: {payload.translation or ''})"
+    # 요구사항: question 필드만으로 유사도를 비교하기 위해 question 텍스트만 사용합니다.
+    # text = f"Q: {payload.question}\nA: {payload.answer}\n(ENG: {payload.translation or ''})"
+    text = payload.question
 
     try:
         embedding = await get_safe_embedding(text)
@@ -288,12 +290,12 @@ async def query_rag(payload: QueryPayload):
             
             # 로컬 LLM을 호출하여 답변 생성
             print("\n5. Generating answer with local LLM...")
-            # generated_answer = await generate_answer_with_local_llm(payload.question, context_str)
-            # print(f"\n6. Generated Answer: {generated_answer.strip()}")
+            generated_answer = await generate_answer_with_local_llm(payload.question, context_str)
+            print(f"\n6. Generated Answer: {generated_answer.strip()}")
 
         print("--- Query Process Finished ---\n")
         return {
-            # "generated_answer": generated_answer.strip(),
+            "generated_answer": generated_answer.strip(),
             "generated_answer": "임시",
             "source_documents": source_documents
         }

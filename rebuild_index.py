@@ -87,7 +87,9 @@ async def main():
             print(f"\n[WARN] Item with missing 'id' found. Skipping. Content: Q: {question[:20]}...")
             continue
             
-        text_to_embed = f"Q: {question}\nA: {answer}\n(ENG: {translation or ''})"
+        # 요구사항: question 필드만으로 유사도를 비교하기 위해 question 텍스트만 사용합니다.
+        # text_to_embed = f"Q: {question}\nA: {answer}\n(ENG: {translation or ''})"
+        text_to_embed = question
         # 임베딩할 텍스트가 비어있는지 확인합니다.
         if not text_to_embed.strip():
             print(f"\n[WARN] Item with empty content found for ID {doc_id_str}. Skipping.")
